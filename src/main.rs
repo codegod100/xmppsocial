@@ -96,14 +96,20 @@ async fn handler(http_request: Sender<String>, content_response: Receiver<String
     // let sleep = time::sleep(Duration::from_secs(5));
     // tokio::pin!(sleep);
     let mut s = String::new();
-    // loop {
-    //     tokio::select! {
-    //         item = cm.rx_node.recv_async() => {
-    //             debug!("web output: {:?}", item.clone().unwrap());
-    //             s.push_str(&item.unwrap());
-    //         }
-    //     }
-    // }
+    loop {
+        debug!("looping in request handler");
+
+        tokio::select! {
+            Ok(item) = content_response.recv_async() => {
+                debug!("web output: {:?}", item);
+                s.push_str(&item);
+            }
+        }
+        if content_response.is_empty() {
+            debug!("content_response is empty");
+            break;
+        }
+    }
 
     s
 }

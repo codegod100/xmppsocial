@@ -17,23 +17,6 @@ use tokio_xmpp::{
 };
 use tracing::{debug, error};
 
-pub async fn send_request(client: &mut Client<StartTlsServerConnector>, jid: &str) -> Result<()> {
-    let s = "<pubsub xmlns='http://jabber.org/protocol/pubsub'>
-    <items node='urn:xmpp:microblog:0'/>
-  </pubsub>";
-    let e = Element::from_str(s)?;
-    let iqtype = IqType::Get(e);
-    let iq = Iq {
-        to: Some(BareJid::from_str(jid)?.into()),
-        from: None,
-        id: "232323".to_string(),
-        payload: iqtype,
-    };
-    // let stanza = Stanza::Iq(iq);
-    client.send_stanza(iq.into()).await?;
-    Ok(())
-}
-
 fn send_item(items: Items, tx: &Sender<String>) -> Result<()> {
     for item in items.items {
         if let Some(payload) = &item.payload {
