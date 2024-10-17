@@ -2350,6 +2350,7 @@ dependencies = [
  "dotenv",
  "feed-rs",
  "flume",
+ "futures",
  "tokio",
  "tokio-rustls",
  "tokio-stream",

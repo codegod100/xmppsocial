@@ -9,6 +9,7 @@ use anyhow::Result;
 use axum::{routing::get, Router};
 use dotenv::dotenv;
 use flume::{Receiver, Sender};
+use futures::executor::block_on;
 use tokio_xmpp::{connect::StartTlsServerConnector, jid::BareJid, Client};
 use tracing::{debug, error};
 use xmppsocial::{send_request, wait_stream};
@@ -24,7 +25,7 @@ async fn main() -> Result<()> {
     let jid = env::var("JID").expect("JID is not set");
     let jid = BareJid::from_str(&jid.clone())?;
     let password = env::var("PASSWORD").expect("PASSWORD is not set");
-    let mut client = Arc::new(Mutex::new(Client::new(jid.clone(), password)));
+    let mut client = Client::new(jid.clone(), password);
 
     // channel for http request
     let (tx, rx) = flume::unbounded();
@@ -49,22 +50,22 @@ async fn main() -> Result<()> {
         }
     });
 
-    let res = run_server(tx, rx_xmpp).await;
-    if let Err(e) = res {
-        error!("error starting server: {}", e);
-    }
+    tokio::spawn(async move {
+        debug!("STARTING SERVER");
+        let res = run_server(tx, rx_xmpp).await;
+        if let Err(e) = res {
+            error!("error starting server: {}", e);
+        }
+    });
 
-    type MuxClient = Arc<Mutex<Client<StartTlsServerConnector>>>;
-
-    // let client = client.lock().unwrap();
-    // wait_stream(&mut client).await?;
+    wait_stream(&mut client).await?;
     Ok(())
 }
 
 async fn run_server(tx: Sender<Command>, rx_xmpp: Receiver<String>) -> Result<()> {
     let app = Router::new().route("/", get(|| handler(tx, rx_xmpp)));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
-    debug!("listening on http://{}", listener.local_addr().unwrap());
+    debug!("listening on http://{}", listener.local_addr()?);
     axum::serve(listener, app).await?;
     Ok(())
 }
