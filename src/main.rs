@@ -1,100 +1,86 @@
-use anyhow::Result;
-use dotenv::dotenv;
-use feed_rs::parser;
-use std::{env, str::FromStr};
-use tokio_rustls::rustls;
-use tokio_stream::StreamExt;
-use tokio_xmpp::{
-    jid::BareJid,
-    minidom::Element,
-    parsers::{
-        iq::{Iq, IqType},
-        pubsub::PubSub,
-    },
-    Client, Event, Stanza,
+use std::{
+    env,
+    str::FromStr,
+    sync::{Arc, Mutex},
+    thread,
 };
-use tracing::debug;
+
+use anyhow::Result;
+use axum::{routing::get, Router};
+use dotenv::dotenv;
+use flume::{Receiver, Sender};
+use tokio_xmpp::{connect::StartTlsServerConnector, jid::BareJid, Client};
+use tracing::{debug, error};
+use xmppsocial::{send_request, wait_stream};
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    tracing_subscriber::fmt::init();
     // rustls::crypto::ring::default_provider()
     //     .install_default()
     //     .unwrap();
     dotenv().ok();
-    tracing_subscriber::fmt::init();
+
     let jid = env::var("JID").expect("JID is not set");
     let jid = BareJid::from_str(&jid.clone())?;
     let password = env::var("PASSWORD").expect("PASSWORD is not set");
-    let mut client = Client::new(jid.clone(), password);
-    // client.
+    let mut client = Arc::new(Mutex::new(Client::new(jid.clone(), password)));
 
-    let mut stream_ended = false;
-    while !stream_ended {
-        if let Some(event) = client.next().await {
-            match event {
-                Event::Online { .. } => {
-                    debug!("online");
-                    let s = "<pubsub xmlns='http://jabber.org/protocol/pubsub'>
-    <items node='urn:xmpp:microblog:0'/>
-  </pubsub>";
-                    let e = Element::from_str(s)?;
-                    let iqtype = IqType::Get(e);
-                    let iq = Iq {
-                        to: Some(jid.clone().into()),
-                        from: None,
-                        id: "232323".to_string(),
-                        payload: iqtype,
-                    };
-                    // let stanza = Stanza::Iq(iq);
-                    client.send_stanza(iq.into()).await?;
+    // channel for http request
+    let (tx, rx) = flume::unbounded();
+
+    // channel for xmpp request
+    let (tx_xmpp, rx_xmpp) = flume::unbounded();
+
+    thread::spawn(move || {
+        for command in rx.iter() {
+            // let client = Arc::clone(&client);
+            // let mut client = client.lock().unwrap();
+            match command {
+                Command::GrabNode(jid) => {
+                    debug!("grabbing node: {}", jid);
+                    tx_xmpp.send("hello".to_string()).unwrap();
+                    // let res = send_request(&mut client, &jid).await;
+                    // if let Err(e) = res {
+                    //     error!("error sending request: {}", e);
+                    // }
                 }
-                Event::Stanza(stanza) => match stanza {
-                    Stanza::Iq(iq) => {
-                        debug!("iq: {:?}", iq);
-                        if let IqType::Result(Some(element)) = iq.payload {
-                            let event = PubSub::try_from(element)?;
-                            match event {
-                                PubSub::Items(items) => {
-                                    debug!("items: {:?}", items);
-                                    for item in items.items {
-                                        if let Some(payload) = &item.payload {
-                                            let payload_s = String::from(payload);
-                                            debug!("payload: {:?}", payload_s);
-                                            let parsed = parser::parse(payload_s.as_bytes())?;
-                                            for entry in parsed.entries {
-                                                let mut link_s = String::from("");
-                                                for link in entry.links {
-                                                    link_s.push_str(&link.href);
-                                                    link_s.push_str("  ");
-                                                }
-                                                debug!(
-                                                    "entry: {:?}",
-                                                    format!(
-                                                        "{} :: {} :: {}",
-                                                        entry.title.unwrap().content,
-                                                        entry
-                                                            .content
-                                                            .unwrap_or_default()
-                                                            .body
-                                                            .unwrap_or_default(),
-                                                        link_s
-                                                    )
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                                _ => debug!("event: {:?}", event),
-                            }
-                        }
-                    }
-                    _ => debug!("stanza: {:?}", stanza),
-                },
-                _ => debug!("event: {:?}", event),
             }
-        } else {
-            stream_ended = true;
         }
+    });
+
+    let res = run_server(tx, rx_xmpp).await;
+    if let Err(e) = res {
+        error!("error starting server: {}", e);
     }
+
+    type MuxClient = Arc<Mutex<Client<StartTlsServerConnector>>>;
+
+    // let client = client.lock().unwrap();
+    // wait_stream(&mut client).await?;
     Ok(())
+}
+
+async fn run_server(tx: Sender<Command>, rx_xmpp: Receiver<String>) -> Result<()> {
+    let app = Router::new().route("/", get(|| handler(tx, rx_xmpp)));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
+    debug!("listening on http://{}", listener.local_addr().unwrap());
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+enum Command {
+    GrabNode(String),
+}
+
+async fn handler(tx: Sender<Command>, rx_xmpp: Receiver<String>) -> String {
+    // todo change this to a request param
+    let jid = env::var("JID").expect("JID is not set");
+    let jid = BareJid::from_str(&jid.clone()).unwrap();
+
+    let res = tx.send(Command::GrabNode(jid.to_string()));
+    if let Err(e) = res {
+        error!("error sending request: {}", e);
+    }
+    rx_xmpp.recv().unwrap()
 }
