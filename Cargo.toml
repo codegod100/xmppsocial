@@ -5,7 +5,8 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.89"
-axum = "0.7.7"
+axum = { version = "0.7.7", features = ["macros"] }
+axum-macros = "0.4.1"
 dotenv = "0.15.0"
 feed-rs = "2.1.1"
 flume = "0.11.0"
