@@ -11,7 +11,7 @@ use tokio_xmpp::{
     minidom::Element,
     parsers::{
         iq::{Iq, IqType},
-        pubsub::PubSub,
+        pubsub::{pubsub::Items, PubSub},
     },
     Client, Event, Stanza,
 };
@@ -34,7 +34,10 @@ pub async fn send_request(client: &mut Client<StartTlsServerConnector>, jid: &st
     Ok(())
 }
 
-pub async fn wait_stream(client: &mut Client<StartTlsServerConnector>) -> Result<()> {
+pub async fn wait_stream(
+    client: &mut Client<StartTlsServerConnector>,
+    tx: Sender<String>,
+) -> Result<()> {
     let mut stream_ended = false;
     while !stream_ended {
         if let Some(event) = client.next().await {
@@ -73,7 +76,7 @@ pub async fn wait_stream(client: &mut Client<StartTlsServerConnector>) -> Result
                                                     link_s
                                                 );
                                                 debug!("entry: {:?}", s);
-                                                // tx.send(s)?;
+                                                tx.send(s)?;
                                             }
                                         }
                                     }
@@ -89,6 +92,58 @@ pub async fn wait_stream(client: &mut Client<StartTlsServerConnector>) -> Result
         } else {
             stream_ended = true;
         }
+    }
+    Ok(())
+}
+
+fn send_item(items: Items, tx: &Sender<String>) -> Result<()> {
+    for item in items.items {
+        if let Some(payload) = &item.payload {
+            let payload_s = String::from(payload);
+            debug!("payload: {:?}", payload_s);
+            let parsed = parser::parse(payload_s.as_bytes())?;
+            for entry in parsed.entries {
+                let mut link_s = String::from("");
+                for link in entry.links {
+                    link_s.push_str(&link.href);
+                    link_s.push_str("  ");
+                }
+
+                let s = format!(
+                    "{} :: {} :: {}",
+                    entry.title.unwrap().content,
+                    entry.content.unwrap_or_default().body.unwrap_or_default(),
+                    link_s
+                );
+                debug!("entry: {:?}", s);
+                tx.send(s)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn match_event(event: Event, tx: &Sender<String>) -> Result<()> {
+    match event {
+        Event::Online { .. } => {
+            debug!("online");
+        }
+        Event::Stanza(stanza) => match stanza {
+            Stanza::Iq(iq) => {
+                debug!("iq: {:?}", iq);
+                if let IqType::Result(Some(element)) = iq.payload {
+                    let event = PubSub::try_from(element)?;
+                    match event {
+                        PubSub::Items(items) => {
+                            send_item(items, tx)?;
+                        }
+                        _ => debug!("event: {:?}", event),
+                    }
+                }
+            }
+            _ => debug!("stanza: {:?}", stanza),
+        },
+        _ => debug!("event: {:?}", event),
     }
     Ok(())
 }
