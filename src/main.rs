@@ -1,21 +1,25 @@
 use anyhow::Result;
 use dotenv::dotenv;
 use feed_rs::parser;
-use minidom::Element;
 use std::{env, str::FromStr};
 use tokio_rustls::rustls;
 use tokio_stream::StreamExt;
-use tokio_xmpp::{jid::BareJid, Client, Event, Stanza};
+use tokio_xmpp::{
+    jid::BareJid,
+    minidom::Element,
+    parsers::{
+        iq::{Iq, IqType},
+        pubsub::PubSub,
+    },
+    Client, Event, Stanza,
+};
 use tracing::debug;
-use xmpp_parsers::iq::IqType::Result as IqResult;
-use xmpp_parsers::iq::{Iq, IqType};
-use xmpp_parsers::pubsub::{PubSub, PubSubEvent};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .unwrap();
+    // rustls::crypto::ring::default_provider()
+    //     .install_default()
+    //     .unwrap();
     dotenv().ok();
     tracing_subscriber::fmt::init();
     let jid = env::var("JID").expect("JID is not set");
@@ -41,13 +45,13 @@ async fn main() -> Result<()> {
                         id: "232323".to_string(),
                         payload: iqtype,
                     };
-                    let stanza = Stanza::Iq(iq);
-                    client.send_stanza(stanza).await?;
+                    // let stanza = Stanza::Iq(iq);
+                    client.send_stanza(iq.into()).await?;
                 }
                 Event::Stanza(stanza) => match stanza {
                     Stanza::Iq(iq) => {
                         debug!("iq: {:?}", iq);
-                        if let IqResult(Some(element)) = iq.payload {
+                        if let IqType::Result(Some(element)) = iq.payload {
                             let event = PubSub::try_from(element)?;
                             match event {
                                 PubSub::Items(items) => {
