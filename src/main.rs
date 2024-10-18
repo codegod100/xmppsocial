@@ -1,13 +1,11 @@
-use std::{cell::RefCell, env, rc::Rc, str::FromStr, sync::Arc, thread, time::Duration};
+use std::{env, str::FromStr, time::Duration};
 
 use anyhow::Result;
 use axum::{response::Html, routing::get, Router};
 use dotenv::dotenv;
 use flume::{Receiver, Sender};
-use tokio::{pin, sync::Mutex, time};
 use tokio_stream::StreamExt;
 use tokio_xmpp::{
-    connect::StartTlsServerConnector,
     jid::BareJid,
     minidom::Element,
     parsers::iq::{Iq, IqType},
@@ -15,11 +13,6 @@ use tokio_xmpp::{
 };
 use tracing::{debug, error};
 use xmppsocial::match_event;
-
-enum Command {
-    GrabNode(String),
-    StartServer,
-}
 
 async fn command_loop(
     http_response: Receiver<String>,

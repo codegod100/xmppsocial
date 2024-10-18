@@ -1,21 +1,13 @@
 use anyhow::Result;
-use dotenv::dotenv;
 use feed_rs::parser;
-use flume::{Receiver, Sender};
-use std::{env, str::FromStr, thread};
-use tokio_rustls::rustls;
-use tokio_stream::StreamExt;
+use flume::Sender;
 use tokio_xmpp::{
-    connect::StartTlsServerConnector,
-    jid::BareJid,
-    minidom::Element,
     parsers::{
-        iq::{Iq, IqType},
+        iq::IqType,
         pubsub::{pubsub::Items, PubSub},
-    },
-    Client, Event, Stanza,
+    }, Event, Stanza,
 };
-use tracing::{debug, error};
+use tracing::debug;
 
 fn send_item(items: Items, tx: &Sender<String>) -> Result<()> {
     for item in items.items {
