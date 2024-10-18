@@ -1,7 +1,7 @@
 use std::{cell::RefCell, env, rc::Rc, str::FromStr, sync::Arc, thread, time::Duration};
 
 use anyhow::Result;
-use axum::{routing::get, Router};
+use axum::{response::Html, routing::get, Router};
 use dotenv::dotenv;
 use flume::{Receiver, Sender};
 use tokio::{pin, sync::Mutex, time};
@@ -83,7 +83,7 @@ async fn run_server(
     Ok(())
 }
 
-async fn handler(http_request: Sender<String>, content_response: Receiver<String>) -> String {
+async fn handler(http_request: Sender<String>, content_response: Receiver<String>) -> Html<String> {
     debug!("inside handler");
     // todo change this to a request param
     let jid = env::var("JID").expect("JID is not set");
@@ -93,8 +93,8 @@ async fn handler(http_request: Sender<String>, content_response: Receiver<String
     if let Err(e) = res {
         error!("error sending request: {}", e);
     }
-    // let sleep = time::sleep(Duration::from_secs(5));
-    // tokio::pin!(sleep);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
     let mut s = String::new();
     loop {
         debug!("looping in request handler");
@@ -111,5 +111,5 @@ async fn handler(http_request: Sender<String>, content_response: Receiver<String
         }
     }
 
-    s
+    Html(s)
 }

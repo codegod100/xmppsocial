@@ -24,14 +24,13 @@ fn send_item(items: Items, tx: &Sender<String>) -> Result<()> {
             debug!("payload: {:?}", payload_s);
             let parsed = parser::parse(payload_s.as_bytes())?;
             for entry in parsed.entries {
-                let mut link_s = String::from("");
+                let mut link_s = String::new();
                 for link in entry.links {
-                    link_s.push_str(&link.href);
-                    link_s.push_str("  ");
+                    link_s.push_str(&format!("<a href='{}'>{}</a>  ", link.href, link.href));
                 }
 
                 let s = format!(
-                    "{} :: {} :: {}\n\n",
+                    "<div>{}</div><div>{}</div><div>{}</div>\n\n",
                     entry.title.unwrap().content,
                     entry.content.unwrap_or_default().body.unwrap_or_default(),
                     link_s
