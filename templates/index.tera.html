@@ -1,17 +1,56 @@
+<!DOCTYPE html>
 <html>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@1.0.2/css/bulma.min.css">
+
+<head>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@1.0.2/css/bulma.min.css">
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+</head>
 
 <body>
-    <div class="grid">
-        <div>
-            <input class="control input" type="text" placeholder="Message...">
-            <button class="button">Send</button>
+    <div clas="container fluid">
+        <div class="mt-2 mb-5 mr-2 ml-2 sticky has-background-black-ter p-2">
+            <div class="">
+                <textarea class="textarea" type="text" placeholder="Write new message..."></textarea>
+                <div class="file ">
+                    <label class="file-label">
+                        <input class="file-input" type="file" name="resume" />
+                        <span class="file-cta">
+                            <span class="file-icon">
+                                <i class="fas fa-upload"></i>
+                            </span>
+                            <span class="file-label"> Choose a file… </span>
+                        </span>
+                    </label>
+                </div>
+                <button class="button">Send</button>
+            </div>
         </div>
         <div>
-            {{content}}
+            {% for entry in entries %}
+            <div class="has-background-black-ter mb-5">
+                <h1>{{entry.title}}</h1>
+                <p>{{entry.uri}}</p>
+                <p>{{entry.published}}</p>
+                <p>{{entry.content}}</p>
+                {% for link in entry.links %}
+                <a href="{{link}}">{{link}}</a>
+                {% endfor %}
+                {% if entry.image %}
+                <img src="{{entry.image}}" alt="image">
+                {% endif %}
+            </div>
+            {% endfor %}
         </div>
     </div>
 
 </body>
 
 </html>
+
+<style>
+    .sticky {
+        position: sticky;
+        top: 5px;
+        width: 300px;
+    }
+</style>

@@ -23,12 +23,12 @@ use tokio_xmpp::{
 };
 use tracing::{debug, error};
 use ulid::Ulid;
-use xmppsocial::match_event;
+use xmppsocial::{match_event, Entry};
 
 async fn command_loop(
     http_request: Sender<String>,
     http_response: Receiver<String>,
-    content_request: Sender<String>,
+    content_request: Sender<Entry>,
     roster_response: Receiver<()>,
 ) -> Result<()> {
     let jid = env::var("JID").expect("JID is not set");
@@ -108,7 +108,7 @@ async fn main() -> Result<()> {
 
 async fn run_server(
     http_request: Sender<String>,
-    content_response: Receiver<String>,
+    content_response: Receiver<Entry>,
     roster_request: Sender<()>,
 ) -> Result<()> {
     let app = Router::new().route(
@@ -143,7 +143,7 @@ where
 
 async fn handler(
     http_request: Sender<String>,
-    content_response: Receiver<String>,
+    content_response: Receiver<Entry>,
     roster_request: Sender<()>,
 ) -> Result<Html<String>, AppError> {
     debug!("inside handler");
@@ -156,14 +156,14 @@ async fn handler(
     roster_request.send_async(()).await?;
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    let mut s = String::new();
+    let mut entries = Vec::new();
     loop {
         debug!("looping in request handler");
 
         tokio::select! {
             Ok(item) = content_response.recv_async() => {
                 debug!("web output: {:?}", item);
-                s.push_str(&item);
+                entries.push(item);
             }
         }
         if content_response.is_empty() {
@@ -171,8 +171,9 @@ async fn handler(
             break;
         }
     }
+    entries.sort_by(|a, b| b.published.cmp(&a.published));
     let mut context = Context::new();
-    context.insert("content", &s);
+    context.insert("entries", &entries);
 
     let mut tera = Tera::new("templates/**/*.html")?;
     tera.autoescape_on(vec![]);

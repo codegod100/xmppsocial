@@ -1,8 +1,10 @@
 use std::{env, str::FromStr};
 
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use feed_rs::parser;
 use flume::Sender;
+use serde::Serialize;
 use tokio_xmpp::{
     connect::StartTlsServerConnector,
     jid::BareJid,
@@ -17,26 +19,65 @@ use tokio_xmpp::{
 use tracing::debug;
 use ulid::Ulid;
 
-fn send_item(items: Items, tx: &Sender<String>) -> Result<()> {
+#[derive(Debug, Serialize)]
+pub struct Entry {
+    pub title: String,
+    pub uri: String,
+    pub published: DateTime<Utc>,
+    pub content: String,
+    pub links: Vec<String>,
+    pub image: Option<String>,
+}
+fn send_item(items: Items, tx: &Sender<Entry>) -> Result<()> {
     for item in items.items {
         if let Some(payload) = &item.payload {
             let payload_s = String::from(payload);
             debug!("payload: {:?}", payload_s);
             let parsed = parser::parse(payload_s.as_bytes())?;
             for entry in parsed.entries {
-                let mut link_s = String::new();
-                for link in entry.links {
-                    link_s.push_str(&format!("<a href='{}'>{}</a>  ", link.href, link.href));
+                let mut uri = String::new();
+                let person = entry.authors.get(0);
+                if let Some(person) = person {
+                    uri = person.uri.clone().unwrap_or_default();
                 }
+                let entry = Entry {
+                    title: entry.title.unwrap().content,
+                    uri,
+                    published: entry.published.unwrap_or_default(),
+                    content: entry.content.unwrap_or_default().body.unwrap_or_default(),
+                    links: entry
+                        .links
+                        .iter()
+                        .filter(|l| match &l.rel {
+                            Some(rel) => rel != "alternate" && rel != "replies",
+                            None => false,
+                        })
+                        .map(|l| l.href.to_string())
+                        .collect(),
+                    image: entry
+                        .links
+                        .iter()
+                        .filter(|l| match &l.rel {
+                            Some(rel) => rel == "enclosure",
+                            None => false,
+                        })
+                        .map(|l| l.href.to_string())
+                        .next(),
+                };
+                // let mut link_s = String::new();
+                // for link in entry.links {
+                //     link_s.push_str(&format!("<a href='{}'>{}</a>  ", link.href, link.href));
+                // }
 
-                let s = format!(
-                    "<div class='has-background-black-ter mb-5'><div >{}</div><div>{}</div><div>{}</div></div>\n\n",
-                    entry.title.unwrap().content,
-                    entry.content.unwrap_or_default().body.unwrap_or_default(),
-                    link_s
-                );
-                debug!("entry: {:?}", s);
-                tx.send(s)?;
+                // let s = format!(
+                //     "<div class='has-background-black-ter mb-5'><div >{}</div><div>{}</div><div>{}</div><div>{}</div></div>\n\n",
+                //     entry.title.unwrap().content,
+                //     entry.published.unwrap_or_default().to_string(),
+                //     entry.content.unwrap_or_default().body.unwrap_or_default(),
+                //     link_s,
+                // );
+                debug!("entry: {:?}", entry);
+                tx.send(entry)?;
             }
         }
     }
@@ -46,7 +87,7 @@ fn send_item(items: Items, tx: &Sender<String>) -> Result<()> {
 pub async fn match_event(
     event: Event,
     http_request: &Sender<String>,
-    tx: &Sender<String>,
+    tx: &Sender<Entry>,
     client: &mut Client<StartTlsServerConnector>,
 ) -> Result<()> {
     match event {
@@ -77,7 +118,7 @@ pub async fn match_event(
                 }
                 if let IqType::Error(error) = &iq.payload {
                     debug!("error: {:?}", error);
-                    tx.send(format!("error: {:?}", error))?;
+                    // tx.send(format!("error: {:?}", error))?;
                 }
             }
             _ => debug!("stanza: {:?}", stanza),
