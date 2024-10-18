@@ -5,7 +5,8 @@ use tokio_xmpp::{
     parsers::{
         iq::IqType,
         pubsub::{pubsub::Items, PubSub},
-    }, Event, Stanza,
+    },
+    Event, Stanza,
 };
 use tracing::debug;
 
@@ -43,14 +44,18 @@ pub fn match_event(event: Event, tx: &Sender<String>) -> Result<()> {
         Event::Stanza(stanza) => match stanza {
             Stanza::Iq(iq) => {
                 debug!("iq: {:?}", iq);
-                if let IqType::Result(Some(element)) = iq.payload {
-                    let event = PubSub::try_from(element)?;
+                if let IqType::Result(Some(element)) = &iq.payload {
+                    let event = PubSub::try_from(element.clone())?;
                     match event {
                         PubSub::Items(items) => {
                             send_item(items, tx)?;
                         }
                         _ => debug!("event: {:?}", event),
                     }
+                }
+                if let IqType::Error(error) = &iq.payload {
+                    debug!("error: {:?}", error);
+                    tx.send(format!("error: {:?}", error))?;
                 }
             }
             _ => debug!("stanza: {:?}", stanza),

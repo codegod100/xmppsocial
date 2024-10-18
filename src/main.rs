@@ -1,7 +1,7 @@
 use std::{env, str::FromStr, time::Duration};
 
 use anyhow::Result;
-use axum::{response::Html, routing::get, Router};
+use axum::{extract::Path, response::Html, routing::get, Router};
 use dotenv::dotenv;
 use flume::{Receiver, Sender};
 use tokio_stream::StreamExt;
@@ -12,6 +12,7 @@ use tokio_xmpp::{
     Client,
 };
 use tracing::{debug, error};
+use ulid::Ulid;
 use xmppsocial::match_event;
 
 async fn command_loop(
@@ -31,10 +32,11 @@ async fn command_loop(
           </pubsub>";
             let e = Element::from_str(s)?;
             let iqtype = IqType::Get(e);
+            let ulid = Ulid::new();
             let iq = Iq {
+                id: ulid.to_string(),
                 to: Some(BareJid::from_str(&jid)?.into()),
                 from: None,
-                id: "232323".to_string(),
                 payload: iqtype,
             };
             // let stanza = Stanza::Iq(iq);
@@ -69,24 +71,29 @@ async fn run_server(
     http_request: Sender<String>,
     content_response: Receiver<String>,
 ) -> Result<()> {
-    let app = Router::new().route("/", get(|| handler(http_request, content_response)));
+    let app = Router::new().route(
+        "/:jid",
+        get(|Path(jid): Path<String>| handler(jid, http_request, content_response)),
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
     debug!("listening on http://{}", listener.local_addr()?);
     axum::serve(listener, app).await?;
     Ok(())
 }
 
-async fn handler(http_request: Sender<String>, content_response: Receiver<String>) -> Html<String> {
+async fn handler(
+    jid: String,
+    http_request: Sender<String>,
+    content_response: Receiver<String>,
+) -> Html<String> {
     debug!("inside handler");
     // todo change this to a request param
-    let jid = env::var("JID").expect("JID is not set");
-    let jid = BareJid::from_str(&jid.clone()).unwrap();
 
-    let res = http_request.send_async(jid.to_string()).await;
+    let res = http_request.send_async(jid).await;
     if let Err(e) = res {
         error!("error sending request: {}", e);
     }
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
 
     let mut s = String::new();
     loop {
