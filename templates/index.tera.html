@@ -10,19 +10,21 @@
     <div clas="container fluid">
         <div class="mt-2 mb-5 mr-2 ml-2 sticky has-background-black-ter p-2">
             <div class="">
-                <textarea class="textarea" type="text" placeholder="Write new message..."></textarea>
-                <div class="file ">
-                    <label class="file-label">
-                        <input class="file-input" type="file" name="resume" />
-                        <span class="file-cta">
-                            <span class="file-icon">
-                                <i class="fas fa-upload"></i>
+                <form action="/" method="post">
+                    <textarea class="textarea" name="message" type="text" placeholder="Write new message..."></textarea>
+                    <div class="file ">
+                        <label class="file-label">
+                            <input class="file-input" type="file" name="resume" />
+                            <span class="file-cta">
+                                <span class="file-icon">
+                                    <i class="fas fa-upload"></i>
+                                </span>
+                                <span class="file-label"> Choose a file… </span>
                             </span>
-                            <span class="file-label"> Choose a file… </span>
-                        </span>
-                    </label>
-                </div>
-                <button class="button">Send</button>
+                        </label>
+                    </div>
+                    <button class="button">Send</button>
+                </form>
             </div>
         </div>
         <div>

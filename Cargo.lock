@@ -2771,6 +2771,7 @@ dependencies = [
  "feed-rs",
  "flume",
  "futures",
+ "percent-encoding",
  "serde",
  "tera",
  "tokio",

@@ -1,0 +1,17 @@
+	<entry xmlns="http://www.w3.org/2005/Atom">
+        <id>{{ entry.id }}</id>
+		<title>{{entry.title}}</title>
+        <published>{{entry.published}}</published>
+		<updated>{{entry.updated}}</updated>
+		<summary>{{entry.summary}}</summary>
+        <content type="text">{{entry.content}}</content>
+		<content type="xhtml">
+            <div xmlns="http://www.w3.org/1999/xhtml">
+                <p>{{entry.content}}</p>
+            </div>
+        </content>
+		<author>
+			<uri>{{entry.author}}</uri>
+		</author>
+        <link rel="alternate" type="text/html" title="{{entry.title}}" href="https://mov.im/blog/{{entry.escape_jid}}/{{entry.id}}" />
+	</entry>

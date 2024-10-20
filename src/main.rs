@@ -2,14 +2,15 @@ use std::{env, str::FromStr, time::Duration};
 
 use anyhow::Result;
 use axum::{
-    extract::Path,
-    http::StatusCode,
+    extract::{Path, State},
+    http::{request, StatusCode},
     response::{Html, IntoResponse, Response},
-    routing::get,
-    Router,
+    routing::{get, post},
+    Form, Router,
 };
 use dotenv::dotenv;
 use flume::{Receiver, Sender};
+use serde::Deserialize;
 use tera::{Context, Tera};
 use tokio_stream::StreamExt;
 use tokio_xmpp::{
@@ -19,17 +20,18 @@ use tokio_xmpp::{
         iq::{Iq, IqType},
         roster::Roster,
     },
-    Client,
+    Client, Stanza,
 };
 use tracing::{debug, error};
 use ulid::Ulid;
-use xmppsocial::{match_event, Entry};
+use xmppsocial::{match_event, Entry, XMLEntry};
 
 async fn command_loop(
     http_request: Sender<String>,
     http_response: Receiver<String>,
     content_request: Sender<Entry>,
     roster_response: Receiver<()>,
+    publish_response: Receiver<(String, String)>,
 ) -> Result<()> {
     let jid = env::var("JID").expect("JID is not set");
     let jid = BareJid::from_str(&jid.clone())?;
@@ -38,6 +40,28 @@ async fn command_loop(
 
     loop {
         tokio::select! {
+        Ok((entry,id)) = publish_response.recv_async()=>{
+            // debug!("got {entry}; attempting to publish");
+
+            let s = format!("<pubsub xmlns='http://jabber.org/protocol/pubsub'>
+    <publish node='urn:xmpp:microblog:0'>
+      <item id='{}'>
+{}
+      </item>
+    </publish></pubsub>",id,entry);
+            let ulid = Ulid::new().to_string();
+            let e = Element::from_str(&s)?;
+            let iqtype = IqType::Set(e);
+            let iq = Iq {
+                id: ulid,
+                to: Some(jid.clone().into()),
+                from: None,
+                payload: iqtype,
+            };
+            let stanza: Stanza = iq.into();
+            debug!("{stanza:?}");
+            client.send_stanza(stanza).await?;
+        },
         Ok(()) = roster_response.recv_async() => {
             debug!("roster response");
 
@@ -90,35 +114,77 @@ async fn main() -> Result<()> {
     let (http_request, http_response) = flume::unbounded();
     let (content_request, content_response) = flume::unbounded();
     let (roster_request, roster_response) = flume::unbounded();
+    let (publish_request, publish_response) = flume::unbounded();
     tokio::spawn(run_server(
         http_request.clone(),
         content_response,
         roster_request,
+        publish_request,
     ));
     command_loop(
         http_request,
         http_response,
         content_request,
         roster_response,
+        publish_response,
     )
     .await?;
 
     Ok(())
 }
 
+#[derive(Clone)]
+struct AppState {
+    publish_request: Sender<(String, String)>,
+}
+
 async fn run_server(
     http_request: Sender<String>,
     content_response: Receiver<Entry>,
     roster_request: Sender<()>,
+    publish_request: Sender<(String, String)>,
 ) -> Result<()> {
-    let app = Router::new().route(
-        "/",
-        get(|| handler(http_request, content_response, roster_request)),
-    );
+    let state = AppState {
+        publish_request: publish_request,
+    };
+    let app = Router::new()
+        .route(
+            "/",
+            get(|| handler(http_request, content_response, roster_request)),
+        )
+        .route("/", post(publish_handler))
+        .with_state(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
     debug!("listening on http://{}", listener.local_addr()?);
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+#[derive(Deserialize)]
+struct Input {
+    message: String,
+}
+
+#[axum::debug_handler]
+async fn publish_handler(
+    state: State<AppState>,
+    Form(input): Form<Input>,
+) -> Result<String, AppError> {
+    let jid = env::var("JID").expect("JID is not set");
+    let content = input.message;
+    let uri = jid;
+    let entry = XMLEntry::quick_post(&content, &uri);
+    let mut tera = Tera::new("templates/**/*")?;
+    tera.autoescape_on(vec![]);
+    let mut context = Context::new();
+    context.insert("entry", &entry);
+    let template = tera.render("entry.tera.atom", &context)?;
+    state
+        .publish_request
+        .send_async((template, entry.id))
+        .await?;
+
+    Ok(String::new())
 }
 
 struct AppError(anyhow::Error);

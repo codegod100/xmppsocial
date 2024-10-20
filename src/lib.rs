@@ -1,9 +1,10 @@
-use std::{env, str::FromStr};
+use std::{cmp::min, env, str::FromStr};
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use feed_rs::parser;
 use flume::Sender;
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde::Serialize;
 use tokio_xmpp::{
     connect::StartTlsServerConnector,
@@ -27,6 +28,42 @@ pub struct Entry {
     pub content: String,
     pub links: Vec<String>,
     pub image: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct XMLEntry {
+    pub id: String,
+    pub title: String,
+    pub published: DateTime<Utc>,
+    pub updated: DateTime<Utc>,
+    pub content: String,
+    pub author: String,
+    pub summary: String,
+    pub jid: String,
+    pub escape_jid: String,
+}
+
+impl XMLEntry {
+    pub fn quick_post(content: &str, jid: &str) -> Self {
+        let length = content.len();
+        // title is up to 25 bytes of content
+        let smaller = min(length, 25);
+        let title = content[..smaller].to_string();
+        let id = Ulid::new().to_string();
+        let jid = jid.to_string();
+        let escape_jid = utf8_percent_encode(&jid, NON_ALPHANUMERIC).to_string();
+        XMLEntry {
+            jid: jid.clone(),
+            id,
+            title,
+            escape_jid,
+            published: Utc::now(),
+            updated: Utc::now(),
+            content: content.to_string(),
+            author: format!("xmpp:{}", jid),
+            summary: String::new(),
+        }
+    }
 }
 fn send_item(items: Items, tx: &Sender<Entry>) -> Result<()> {
     for item in items.items {
