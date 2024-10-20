@@ -24,15 +24,41 @@ use tokio_xmpp::{
 };
 use tracing::{debug, error};
 use ulid::Ulid;
-use xmppsocial::{match_event, Entry, XMLEntry};
+use xmppsocial::{match_event, AppState, Entry, Signal, XMLEntry};
 
-async fn command_loop(
-    http_request: Sender<String>,
-    http_response: Receiver<String>,
-    content_request: Sender<Entry>,
-    roster_response: Receiver<()>,
-    publish_response: Receiver<(String, String)>,
-) -> Result<()> {
+async fn content_stanza(jid: BareJid, entry: &XMLEntry) -> Result<Stanza> {
+    // debug!("got {entry}; attempting to publish");
+    let mut tera = Tera::new("templates/**/*")?;
+    tera.autoescape_on(vec![]);
+    let mut context = Context::new();
+    context.insert("entry", &entry);
+    let template = tera.render("entry.tera.atom", &context)?;
+    let s = format!(
+        "<pubsub xmlns='http://jabber.org/protocol/pubsub'>
+                <publish node='urn:xmpp:microblog:0'>
+                  <item id='{}'>
+                    {}
+                  </item>
+                </publish>
+        </pubsub>",
+        entry.id, template
+    );
+    let ulid = Ulid::new().to_string();
+    let e = Element::from_str(&s)?;
+    let iqtype = IqType::Set(e);
+    let iq = Iq {
+        id: ulid,
+        to: Some(jid.into()),
+        from: None,
+        payload: iqtype,
+    };
+    let stanza: Stanza = iq.into();
+    debug!("{stanza:?}");
+
+    Ok(stanza)
+}
+
+async fn command_loop(state: &AppState) -> Result<()> {
     let jid = env::var("JID").expect("JID is not set");
     let jid = BareJid::from_str(&jid.clone())?;
     let password = env::var("PASSWORD").expect("PASSWORD is not set");
@@ -40,29 +66,11 @@ async fn command_loop(
 
     loop {
         tokio::select! {
-        Ok((entry,id)) = publish_response.recv_async()=>{
-            // debug!("got {entry}; attempting to publish");
-
-            let s = format!("<pubsub xmlns='http://jabber.org/protocol/pubsub'>
-    <publish node='urn:xmpp:microblog:0'>
-      <item id='{}'>
-{}
-      </item>
-    </publish></pubsub>",id,entry);
-            let ulid = Ulid::new().to_string();
-            let e = Element::from_str(&s)?;
-            let iqtype = IqType::Set(e);
-            let iq = Iq {
-                id: ulid,
-                to: Some(jid.clone().into()),
-                from: None,
-                payload: iqtype,
-            };
-            let stanza: Stanza = iq.into();
-            debug!("{stanza:?}");
+        Ok(Signal::XMLEntry(entry)) = state.rx.recv_async()=>{
+            let stanza = content_stanza(jid.clone(), &entry).await?;
             client.send_stanza(stanza).await?;
-        },
-        Ok(()) = roster_response.recv_async() => {
+        }
+        Ok(Signal::Roster) = state.rx.recv_async() => {
             debug!("roster response");
 
             let s = "<query xmlns='jabber:iq:roster'/>";
@@ -77,11 +85,12 @@ async fn command_loop(
             };
             client.send_stanza(iq.into()).await?;
         },
-        Ok(jid) = http_response.recv_async() => {
+        Ok(Signal::Jid(jid)) = state.rx.recv_async() => {
             debug!("grabbing {jid} from http request");
-            let s = "<pubsub xmlns='http://jabber.org/protocol/pubsub'>
-            <items node='urn:xmpp:microblog:0'/>
-          </pubsub>";
+            let s =
+            "<pubsub xmlns='http://jabber.org/protocol/pubsub'>
+                <items node='urn:xmpp:microblog:0'/>
+            </pubsub>";
             let e = Element::from_str(s)?;
             let iqtype = IqType::Get(e);
             let ulid = Ulid::new();
@@ -97,7 +106,7 @@ async fn command_loop(
 
         Some(event) = client.next() => {
             debug!("event: {:?}", event);
-            match_event(event, &http_request, &content_request, &mut client).await?;
+            match_event(event, &state, &mut client).await?;
         }
 
 
@@ -111,47 +120,17 @@ async fn main() -> Result<()> {
 
     dotenv().ok();
 
-    let (http_request, http_response) = flume::unbounded();
-    let (content_request, content_response) = flume::unbounded();
-    let (roster_request, roster_response) = flume::unbounded();
-    let (publish_request, publish_response) = flume::unbounded();
-    tokio::spawn(run_server(
-        http_request.clone(),
-        content_response,
-        roster_request,
-        publish_request,
-    ));
-    command_loop(
-        http_request,
-        http_response,
-        content_request,
-        roster_response,
-        publish_response,
-    )
-    .await?;
+    let state = AppState::new();
+
+    tokio::spawn(run_server(state.clone()));
+    command_loop(&state).await?;
 
     Ok(())
 }
 
-#[derive(Clone)]
-struct AppState {
-    publish_request: Sender<(String, String)>,
-}
-
-async fn run_server(
-    http_request: Sender<String>,
-    content_response: Receiver<Entry>,
-    roster_request: Sender<()>,
-    publish_request: Sender<(String, String)>,
-) -> Result<()> {
-    let state = AppState {
-        publish_request: publish_request,
-    };
+async fn run_server(state: AppState) -> Result<()> {
     let app = Router::new()
-        .route(
-            "/",
-            get(|| handler(http_request, content_response, roster_request)),
-        )
+        .route("/", get(index_handler))
         .route("/", post(publish_handler))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
@@ -174,17 +153,43 @@ async fn publish_handler(
     let content = input.message;
     let uri = jid;
     let entry = XMLEntry::quick_post(&content, &uri);
-    let mut tera = Tera::new("templates/**/*")?;
-    tera.autoescape_on(vec![]);
-    let mut context = Context::new();
-    context.insert("entry", &entry);
-    let template = tera.render("entry.tera.atom", &context)?;
-    state
-        .publish_request
-        .send_async((template, entry.id))
-        .await?;
+
+    state.tx.send_async(Signal::XMLEntry(entry)).await?;
 
     Ok(String::new())
+}
+
+#[axum::debug_handler]
+async fn index_handler(state: State<AppState>) -> Result<Html<String>, AppError> {
+    debug!("index handler");
+
+    // send signal to request roster
+    state.tx.send_async(Signal::Roster).await?;
+    // wait for the response, todo figure out how to do this with async
+    // tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let mut entries = Vec::new();
+    loop {
+        debug!("looping in index handler");
+
+        tokio::select! {
+            Ok(Signal::Entry(entry)) = state.rx.recv_async() => {
+                debug!("entry: {:?}", entry);
+                entries.push(entry);
+            },
+            Ok(Signal::EntryBreak) = state.rx.recv_async()=>{
+                break
+            }
+        }
+    }
+    entries.sort_by(|a, b| b.published.cmp(&a.published));
+    let mut context = Context::new();
+    context.insert("entries", &entries);
+
+    let mut tera = Tera::new("templates/**/*.html")?;
+    tera.autoescape_on(vec![]);
+    let template = tera.render("index.tera.html", &context)?;
+    Ok(Html(template))
 }
 
 struct AppError(anyhow::Error);
@@ -205,44 +210,4 @@ where
     fn from(err: E) -> Self {
         Self(err.into())
     }
-}
-
-async fn handler(
-    http_request: Sender<String>,
-    content_response: Receiver<Entry>,
-    roster_request: Sender<()>,
-) -> Result<Html<String>, AppError> {
-    debug!("inside handler");
-    // todo change this to a request param
-
-    // let res = http_request.send_async(jid).await;
-    // if let Err(e) = res {
-    //     error!("error sending request: {}", e);
-    // }
-    roster_request.send_async(()).await?;
-    tokio::time::sleep(Duration::from_secs(1)).await;
-
-    let mut entries = Vec::new();
-    loop {
-        debug!("looping in request handler");
-
-        tokio::select! {
-            Ok(item) = content_response.recv_async() => {
-                debug!("web output: {:?}", item);
-                entries.push(item);
-            }
-        }
-        if content_response.is_empty() {
-            debug!("content_response is empty");
-            break;
-        }
-    }
-    entries.sort_by(|a, b| b.published.cmp(&a.published));
-    let mut context = Context::new();
-    context.insert("entries", &entries);
-
-    let mut tera = Tera::new("templates/**/*.html")?;
-    tera.autoescape_on(vec![]);
-    let template = tera.render("index.tera.html", &context)?;
-    Ok(Html(template))
 }

@@ -3,7 +3,7 @@ use std::{cmp::min, env, str::FromStr};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use feed_rs::parser;
-use flume::Sender;
+use flume::{Receiver, Sender};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde::Serialize;
 use tokio_xmpp::{
@@ -19,6 +19,27 @@ use tokio_xmpp::{
 };
 use tracing::debug;
 use ulid::Ulid;
+
+pub enum Signal {
+    XMLEntry(XMLEntry),
+    Entry(Entry),
+    Roster,
+    Jid(String),
+    EntryBreak,
+}
+
+#[derive(Clone)]
+pub struct AppState {
+    pub tx: Sender<Signal>,
+    pub rx: Receiver<Signal>,
+}
+
+impl AppState {
+    pub fn new() -> Self {
+        let (tx, rx) = flume::unbounded();
+        Self { tx, rx }
+    }
+}
 
 #[derive(Debug, Serialize)]
 pub struct Entry {
@@ -65,7 +86,7 @@ impl XMLEntry {
         }
     }
 }
-fn send_item(items: Items, tx: &Sender<Entry>) -> Result<()> {
+fn send_item(items: Items, tx: &Sender<Signal>) -> Result<()> {
     for item in items.items {
         if let Some(payload) = &item.payload {
             let payload_s = String::from(payload);
@@ -101,20 +122,9 @@ fn send_item(items: Items, tx: &Sender<Entry>) -> Result<()> {
                         .map(|l| l.href.to_string())
                         .next(),
                 };
-                // let mut link_s = String::new();
-                // for link in entry.links {
-                //     link_s.push_str(&format!("<a href='{}'>{}</a>  ", link.href, link.href));
-                // }
 
-                // let s = format!(
-                //     "<div class='has-background-black-ter mb-5'><div >{}</div><div>{}</div><div>{}</div><div>{}</div></div>\n\n",
-                //     entry.title.unwrap().content,
-                //     entry.published.unwrap_or_default().to_string(),
-                //     entry.content.unwrap_or_default().body.unwrap_or_default(),
-                //     link_s,
-                // );
                 debug!("entry: {:?}", entry);
-                tx.send(entry)?;
+                tx.send(Signal::Entry(entry))?;
             }
         }
     }
@@ -123,8 +133,7 @@ fn send_item(items: Items, tx: &Sender<Entry>) -> Result<()> {
 
 pub async fn match_event(
     event: Event,
-    http_request: &Sender<String>,
-    tx: &Sender<Entry>,
+    state: &AppState,
     client: &mut Client<StartTlsServerConnector>,
 ) -> Result<()> {
     match event {
@@ -139,7 +148,7 @@ pub async fn match_event(
                         let event = PubSub::try_from(element.clone())?;
                         match event {
                             PubSub::Items(items) => {
-                                send_item(items, tx)?;
+                                send_item(items, &state.tx)?;
                             }
                             _ => debug!("event: {:?}", event),
                         }
@@ -149,7 +158,10 @@ pub async fn match_event(
                         let roster = Roster::try_from(element.clone())?;
                         for item in roster.items {
                             debug!("item: {:?}", item);
-                            http_request.send_async(item.jid.to_string()).await?;
+                            state
+                                .tx
+                                .send_async(Signal::Jid(item.jid.to_string()))
+                                .await?;
                         }
                     }
                 }
