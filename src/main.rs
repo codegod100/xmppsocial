@@ -1,9 +1,9 @@
-use std::{env, str::FromStr, sync::Arc, time::Duration};
+use std::{env, str::FromStr, time::Duration};
 
 use anyhow::Result;
 use axum::{
-    extract::{Path, State},
-    http::{request, StatusCode},
+    extract::State,
+    http::StatusCode,
     response::{Html, IntoResponse, Response},
     routing::{get, post},
     Form, Router,
@@ -12,21 +12,16 @@ use dotenv::dotenv;
 use flume::{Receiver, Sender};
 use serde::Deserialize;
 use tera::{Context, Tera};
-use tokio::{sync::Mutex, time::sleep};
 use tokio_stream::StreamExt;
 use tokio_xmpp::{
-    connect::starttls::StartTlsClient,
     jid::BareJid,
     minidom::Element,
-    parsers::{
-        iq::{Iq, IqType},
-        roster::Roster,
-    },
+    parsers::iq::{Iq, IqType},
     Client, Event, Stanza,
 };
-use tracing::{debug, error};
+use tracing::debug;
 use ulid::Ulid;
-use xmppsocial::{match_event, AppState, Entry, Signal, XMLEntry};
+use xmppsocial::{match_event, Signal, XMLEntry};
 
 async fn content_stanza(jid: BareJid, entry: &XMLEntry) -> Result<Stanza> {
     // debug!("got {entry}; attempting to publish");

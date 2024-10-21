@@ -1,4 +1,4 @@
-use std::{cmp::min, env, str::FromStr};
+use std::cmp::min;
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -7,15 +7,11 @@ use flume::{Receiver, Sender};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde::Serialize;
 use tokio_xmpp::{
-    connect::StartTlsServerConnector,
-    jid::BareJid,
-    minidom::Element,
     parsers::{
-        iq::{Iq, IqType},
+        iq::IqType,
         pubsub::{pubsub::Items, PubSub},
         roster::Roster,
-    },
-    Client, Event, Stanza,
+    }, Event, Stanza,
 };
 use tracing::debug;
 use ulid::Ulid;
