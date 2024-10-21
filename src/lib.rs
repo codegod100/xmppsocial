@@ -48,7 +48,7 @@ impl XMLEntry {
         let length = content.len();
         // title is up to 25 bytes of content
         let smaller = min(length, 25);
-        let title = content[..smaller].to_string();
+        let title = format!("{}...", content[..smaller].to_string());
         let id = Ulid::new().to_string();
         let jid = jid.to_string();
         let escape_jid = utf8_percent_encode(&jid, NON_ALPHANUMERIC).to_string();

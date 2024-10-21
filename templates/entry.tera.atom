@@ -14,4 +14,6 @@
 			<uri>{{entry.author}}</uri>
 		</author>
         <link rel="alternate" type="text/html" title="{{entry.title}}" href="https://mov.im/blog/{{entry.escape_jid}}/{{entry.id}}" />
+        <link rel="alternate" href="xmpp:{{entry.jid}}?;node=urn:xmpp:microblog:0;item={{entry.id}}" />
+        <link rel="replies" href="xmpp:{{entry.jid}}?;node=urn:xmpp:microblog:0:comments/{{entry.id}}" title="comments" />
 	</entry>
