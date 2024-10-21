@@ -60,62 +60,70 @@ async fn content_stanza(jid: BareJid, entry: &XMLEntry) -> Result<Stanza> {
     Ok(stanza)
 }
 
-async fn command_loop(xmpp_rx: Receiver<Signal>, http_tx: Sender<Signal>) -> Result<()> {
+async fn command_loop(
+    xmpp_rx: Receiver<Signal>,
+    http_tx: Sender<Signal>,
+    xmpp_tx: Sender<Signal>,
+) -> Result<()> {
     let jid = env::var("JID").expect("JID is not set");
     let jid = BareJid::from_str(&jid.clone())?;
     let password = env::var("PASSWORD").expect("PASSWORD is not set");
     let mut client = Client::new(jid.clone(), password);
-    tokio::select! {
-         Ok(signal) = xmpp_rx.recv_async() =>{
-            match signal {
-                Signal::XMLEntry(entry) => {
-                    let stanza = content_stanza(jid.clone(), &entry).await?;
-                    client.send_stanza(stanza).await?;
-                }
-                Signal::Roster => {
-                    debug!("roster response");
+    loop {
+        tokio::select! {
+             Ok(signal) = xmpp_rx.recv_async() =>{
+                match signal {
+                    Signal::XMLEntry(entry) => {
+                        let stanza = content_stanza(jid.clone(), &entry).await?;
+                        client.send_stanza(stanza).await?;
+                    }
+                    Signal::Roster => {
+                        debug!("roster response");
 
-                    let s = "<query xmlns='jabber:iq:roster'/>";
-                    let e = Element::from_str(&s)?;
-                    let iqtype = IqType::Get(e);
-                    let ulid = Ulid::new();
-                    let iq = Iq {
-                        id: ulid.to_string(),
-                        to: Some(jid.clone().into()),
-                        from: None,
-                        payload: iqtype,
-                    };
-                    client.send_stanza(iq.into()).await?;
-                }
-                Signal::Jid(jid) => {
-                    debug!("grabbing {jid} from http request");
-                    let s = "<pubsub xmlns='http://jabber.org/protocol/pubsub'>
+                        let s = "<query xmlns='jabber:iq:roster'/>";
+                        let e = Element::from_str(&s)?;
+                        let iqtype = IqType::Get(e);
+                        let ulid = Ulid::new();
+                        let iq = Iq {
+                            id: ulid.to_string(),
+                            to: Some(jid.clone().into()),
+                            from: None,
+                            payload: iqtype,
+                        };
+                        client.send_stanza(iq.into()).await?;
+                        // todo figure out a smart way to wait
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        http_tx.send_async(Signal::EntryBreak).await?;
+                    }
+                    Signal::Jid(jid) => {
+                        debug!("grabbing {jid} from http request");
+                        let s = "<pubsub xmlns='http://jabber.org/protocol/pubsub'>
                     <items node='urn:xmpp:microblog:0'/>
                 </pubsub>";
-                    let e = Element::from_str(s)?;
-                    let iqtype = IqType::Get(e);
-                    let ulid = Ulid::new();
-                    let iq = Iq {
-                        id: ulid.to_string(),
-                        to: Some(BareJid::from_str(&jid)?.into()),
-                        from: None,
-                        payload: iqtype,
-                    };
-                    client.send_stanza(iq.into()).await?;
+                        let e = Element::from_str(s)?;
+                        let iqtype = IqType::Get(e);
+                        let ulid = Ulid::new();
+                        let iq = Iq {
+                            id: ulid.to_string(),
+                            to: Some(BareJid::from_str(&jid)?.into()),
+                            from: None,
+                            payload: iqtype,
+                        };
+                        client.send_stanza(iq.into()).await?;
+                    }
+                    _ => debug!("some other thing"),
                 }
-                _ => debug!("some other thing"),
+            },
+            event = client.next() => {
+                    debug!("event: {:?}", event);
+                    match event {
+                        Some(Event::Online { .. }) => {}
+                        Some(event) => match_event(event, http_tx.clone(), xmpp_tx.clone()).await?,
+                        _ => {}
+                    }
             }
-        },
-        event = client.next() => {
-                debug!("event: {:?}", event);
-                match event {
-                    Some(Event::Online { .. }) => {}
-                    Some(event) => match_event(event, http_tx).await?,
-                    _ => {}
-                }
         }
     }
-    Ok(())
 }
 
 #[tokio::main]
@@ -126,8 +134,8 @@ async fn main() -> Result<()> {
 
     let (http_tx, http_rx) = flume::unbounded();
     let (xmpp_tx, xmpp_rx) = flume::unbounded();
-    tokio::spawn(run_server(http_rx, xmpp_tx));
-    command_loop(xmpp_rx).await?;
+    tokio::spawn(run_server(http_rx, xmpp_tx.clone()));
+    command_loop(xmpp_rx, http_tx, xmpp_tx).await?;
 
     Ok(())
 }
@@ -173,7 +181,6 @@ async fn index_handler(
         debug!("after roster sent");
     }
     // wait for the response, todo figure out how to do this with async
-    tokio::time::sleep(Duration::from_secs(1)).await;
 
     let mut entries = Vec::new();
     while let Ok(signal) = http_rx.recv_async().await {

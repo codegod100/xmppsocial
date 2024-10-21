@@ -128,13 +128,16 @@ fn send_item(items: Items, http_tx: Sender<Signal>) -> Result<()> {
                 debug!("entry: {:?}", entry);
                 http_tx.send(Signal::Entry(entry))?;
             }
-            http_tx.send(Signal::EntryBreak)?;
         }
     }
     Ok(())
 }
 
-pub async fn match_event(event: Event, http_tx: Sender<Signal>) -> Result<()> {
+pub async fn match_event(
+    event: Event,
+    http_tx: Sender<Signal>,
+    xmpp_tx: Sender<Signal>,
+) -> Result<()> {
     match event {
         Event::Online { .. } => {
             debug!("online");
@@ -157,8 +160,7 @@ pub async fn match_event(event: Event, http_tx: Sender<Signal>) -> Result<()> {
                         let roster = Roster::try_from(element.clone())?;
                         for item in roster.items {
                             debug!("item: {:?}", item);
-                            state
-                                .tx
+                            xmpp_tx
                                 .send_async(Signal::Jid(item.jid.to_string()))
                                 .await?;
                         }
