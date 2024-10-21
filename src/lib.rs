@@ -20,12 +20,14 @@ use tokio_xmpp::{
 use tracing::debug;
 use ulid::Ulid;
 
+#[derive(Debug)]
 pub enum Signal {
     XMLEntry(XMLEntry),
     Entry(Entry),
     Roster,
     Jid(String),
     EntryBreak,
+    Online,
 }
 
 #[derive(Clone)]
@@ -51,7 +53,7 @@ pub struct Entry {
     pub image: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 pub struct XMLEntry {
     pub id: String,
     pub title: String,
@@ -126,16 +128,13 @@ fn send_item(items: Items, tx: &Sender<Signal>) -> Result<()> {
                 debug!("entry: {:?}", entry);
                 tx.send(Signal::Entry(entry))?;
             }
+            tx.send(Signal::EntryBreak)?;
         }
     }
     Ok(())
 }
 
-pub async fn match_event(
-    event: Event,
-    state: &AppState,
-    client: &mut Client<StartTlsServerConnector>,
-) -> Result<()> {
+pub async fn match_event(event: Event, state: &AppState) -> Result<()> {
     match event {
         Event::Online { .. } => {
             debug!("online");
