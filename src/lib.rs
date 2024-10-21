@@ -88,7 +88,7 @@ impl XMLEntry {
         }
     }
 }
-fn send_item(items: Items, tx: &Sender<Signal>) -> Result<()> {
+fn send_item(items: Items, http_tx: Sender<Signal>) -> Result<()> {
     for item in items.items {
         if let Some(payload) = &item.payload {
             let payload_s = String::from(payload);
@@ -126,15 +126,15 @@ fn send_item(items: Items, tx: &Sender<Signal>) -> Result<()> {
                 };
 
                 debug!("entry: {:?}", entry);
-                tx.send(Signal::Entry(entry))?;
+                http_tx.send(Signal::Entry(entry))?;
             }
-            tx.send(Signal::EntryBreak)?;
+            http_tx.send(Signal::EntryBreak)?;
         }
     }
     Ok(())
 }
 
-pub async fn match_event(event: Event, state: &AppState) -> Result<()> {
+pub async fn match_event(event: Event, http_tx: Sender<Signal>) -> Result<()> {
     match event {
         Event::Online { .. } => {
             debug!("online");
@@ -147,7 +147,7 @@ pub async fn match_event(event: Event, state: &AppState) -> Result<()> {
                         let event = PubSub::try_from(element.clone())?;
                         match event {
                             PubSub::Items(items) => {
-                                send_item(items, &state.tx)?;
+                                send_item(items, http_tx)?;
                             }
                             _ => debug!("event: {:?}", event),
                         }
