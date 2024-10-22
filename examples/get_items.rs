@@ -18,8 +18,6 @@ async fn main() -> Result<()> {
     let password = env::var("PASSWORD").expect("PASSWORD is not set");
     let client = Client::new(jid.clone(), password);
     let mut connection = Connection::new(client);
-    sleep(Duration::from_secs(5)).await;
-    debug!("grabbing");
     let items = connection
         .get_items("nandi@conversations.im", "urn:xmpp:microblog:0")
         .await?;

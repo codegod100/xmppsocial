@@ -108,6 +108,7 @@ async fn event_match(client: Arc<Mutex<StartTlsClient>>, tx: Sender<Signal>) -> 
             match event {
                 Event::Online { .. } => {
                     debug!("online");
+                    tx.send_async(Signal::Online).await?;
                 }
                 Event::Stanza(Stanza::Iq(iq)) => match iq.payload {
                     IqType::Result(Some(result)) => {
@@ -146,6 +147,11 @@ impl Connection {
     }
 
     pub async fn get_items(&mut self, jid: &str, node: &str) -> Result<Items> {
+        loop {
+            if let Ok(Signal::Online) = self.rx.recv_async().await {
+                break;
+            }
+        }
         let s = format!(
             "<pubsub xmlns='http://jabber.org/protocol/pubsub'>
                 <items node='{node}'/>
