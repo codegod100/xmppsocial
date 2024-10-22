@@ -86,6 +86,9 @@ async fn command_loop(
                             payload: iqtype,
                         };
                         client.send_stanza(iq.into()).await?;
+
+
+                        let s = "<query xmlns='http://jabber.org/protocol/disco#items'/>";
                         // todo figure out a smart way to wait
                         tokio::time::sleep(Duration::from_secs(1)).await;
                         http_tx.send_async(Signal::EntryBreak).await?;

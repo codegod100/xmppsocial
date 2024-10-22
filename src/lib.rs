@@ -1,4 +1,4 @@
-use std::cmp::min;
+use std::{cell::RefCell, cmp::min, rc::Rc, str::FromStr, sync::Arc, time::Duration};
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -6,12 +6,18 @@ use feed_rs::parser;
 use flume::{Receiver, Sender};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde::Serialize;
+use tokio::{sync::Mutex, task, time::timeout};
+use tokio_stream::StreamExt;
 use tokio_xmpp::{
+    connect::starttls::StartTlsClient,
+    jid::BareJid,
+    minidom::Element,
     parsers::{
-        iq::IqType,
+        iq::{Iq, IqType},
         pubsub::{pubsub::Items, PubSub},
         roster::Roster,
-    }, Event, Stanza,
+    },
+    Event, Stanza,
 };
 use tracing::debug;
 use ulid::Ulid;
@@ -22,6 +28,7 @@ pub enum Signal {
     Entry(Entry),
     Roster,
     Jid(String),
+    Items((String, Items)),
     EntryBreak,
     Online,
 }
@@ -84,6 +91,99 @@ impl XMLEntry {
         }
     }
 }
+
+pub struct Connection {
+    pub client: Arc<Mutex<StartTlsClient>>,
+    online: bool,
+    tx: Sender<Signal>,
+    rx: Receiver<Signal>,
+}
+
+async fn event_match(client: Arc<Mutex<StartTlsClient>>, tx: Sender<Signal>) -> Result<()> {
+    loop {
+        debug!("looping");
+        let mut client = client.lock().await;
+        if let Ok(Some(event)) = timeout(Duration::from_secs(1), client.next()).await {
+            debug!("event: {:?}", event);
+            match event {
+                Event::Online { .. } => {
+                    debug!("online");
+                }
+                Event::Stanza(Stanza::Iq(iq)) => match iq.payload {
+                    IqType::Result(Some(result)) => {
+                        debug!("{result:?}");
+                        if result.ns() == "http://jabber.org/protocol/pubsub" {
+                            let event = PubSub::try_from(result.clone())?;
+                            match event {
+                                PubSub::Items(items) => {
+                                    tx.send_async(Signal::Items((iq.id, items))).await?;
+                                }
+                                _ => debug!("event: {:?}", event),
+                            }
+                        }
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+    }
+}
+
+impl Connection {
+    pub fn new(client: StartTlsClient) -> Self {
+        let client = Arc::new(Mutex::new(client));
+        let (tx, rx) = flume::unbounded();
+        let c = Arc::clone(&client);
+        let t = tx.clone();
+        task::spawn(async move { event_match(c, t).await });
+        Connection {
+            client,
+            online: false,
+            tx,
+            rx,
+        }
+    }
+
+    pub async fn get_items(&mut self, jid: &str, node: &str) -> Result<Items> {
+        let s = format!(
+            "<pubsub xmlns='http://jabber.org/protocol/pubsub'>
+                <items node='{node}'/>
+            </pubsub>"
+        );
+        let e = Element::from_str(&s)?;
+        let iqtype = IqType::Get(e);
+        let ulid = Ulid::new();
+        let iq = Iq {
+            id: ulid.to_string(),
+            to: Some(BareJid::from_str(&jid)?.into()),
+            from: None,
+            payload: iqtype,
+        };
+        {
+            let mut client = self.client.lock().await;
+            client.send_stanza(iq.into()).await?;
+        }
+        let items: Items;
+        let ulid = ulid.to_string();
+        loop {
+            if let Ok(Ok(Signal::Items((id, _items)))) =
+                timeout(Duration::from_secs(1), self.rx.recv_async()).await
+            {
+                if id == ulid {
+                    items = _items;
+                    break;
+                }
+            }
+        }
+        // let items = match self.rx.recv_async().await? {
+        //     Signal::Items((id, items)) => items,
+        //     _ => {}
+        // };
+        Ok(items)
+    }
+}
+
 fn send_item(items: Items, http_tx: Sender<Signal>) -> Result<()> {
     for item in items.items {
         if let Some(payload) = &item.payload {
