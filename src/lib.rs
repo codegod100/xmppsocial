@@ -94,64 +94,71 @@ impl XMLEntry {
 
 pub struct Connection {
     pub client: Arc<Mutex<StartTlsClient>>,
-    online: bool,
-    tx: Sender<Signal>,
-    rx: Receiver<Signal>,
-}
-
-async fn event_match(client: Arc<Mutex<StartTlsClient>>, tx: Sender<Signal>) -> Result<()> {
-    loop {
-        debug!("looping");
-        let mut client = client.lock().await;
-        if let Ok(Some(event)) = timeout(Duration::from_secs(1), client.next()).await {
-            debug!("event: {:?}", event);
-            match event {
-                Event::Online { .. } => {
-                    debug!("online");
-                    tx.send_async(Signal::Online).await?;
-                }
-                Event::Stanza(Stanza::Iq(iq)) => match iq.payload {
-                    IqType::Result(Some(result)) => {
-                        debug!("{result:?}");
-                        if result.ns() == "http://jabber.org/protocol/pubsub" {
-                            let event = PubSub::try_from(result.clone())?;
-                            match event {
-                                PubSub::Items(items) => {
-                                    tx.send_async(Signal::Items((iq.id, items))).await?;
-                                }
-                                _ => debug!("event: {:?}", event),
-                            }
-                        }
-                    }
-                    _ => {}
-                },
-                _ => {}
-            }
-        }
-    }
+    online: Arc<Mutex<bool>>,
+    items_tx: Sender<Items>,
+    items_rx: Receiver<Items>,
 }
 
 impl Connection {
-    pub fn new(client: StartTlsClient) -> Self {
+    pub async fn new(client: StartTlsClient) -> Self {
         let client = Arc::new(Mutex::new(client));
-        let (tx, rx) = flume::unbounded();
-        let c = Arc::clone(&client);
-        let t = tx.clone();
-        task::spawn(async move { event_match(c, t).await });
-        Connection {
-            client,
-            online: false,
-            tx,
-            rx,
-        }
-    }
-
-    pub async fn get_items(&mut self, jid: &str, node: &str) -> Result<Items> {
+        let (items_tx, items_rx) = flume::unbounded();
+        let conn = Connection {
+            client: Arc::clone(&client),
+            online: Arc::new(Mutex::new(false)),
+            items_tx,
+            items_rx,
+        };
+        conn.event_loop().await;
         loop {
-            if let Ok(Signal::Online) = self.rx.recv_async().await {
+            if *conn.online.lock().await {
                 break;
             }
         }
+        conn
+    }
+
+    pub async fn event_loop(&self) {
+        let client = Arc::clone(&self.client);
+        let online = Arc::clone(&self.online);
+        let items_tx = self.items_tx.clone();
+        task::spawn(async move {
+            loop {
+                let mut client = client.lock().await;
+                if let Ok(Some(event)) = timeout(Duration::from_secs(1), client.next()).await {
+                    debug!("event: {:?}", event);
+                    match event {
+                        Event::Online { .. } => {
+                            debug!("online");
+                            // tx.send_async(Signal::Online).await?;
+                            let mut online = online.lock().await;
+                            *online = true;
+                        }
+                        Event::Stanza(Stanza::Iq(iq)) => match iq.payload {
+                            IqType::Result(Some(result)) => {
+                                debug!("{result:?}");
+                                if result.ns() == "http://jabber.org/protocol/pubsub" {
+                                    let event = PubSub::try_from(result.clone())?;
+                                    match event {
+                                        PubSub::Items(items) => {
+                                            items_tx.send_async(items).await?;
+                                        }
+                                        _ => debug!("event: {:?}", event),
+                                    }
+                                }
+                            }
+                            _ => {}
+                        },
+                        _ => {}
+                    }
+                }
+            }
+
+            Ok::<(), anyhow::Error>(())
+        });
+    }
+
+    pub async fn get_items(&mut self, jid: &str, node: &str) -> Result<Items> {
         let s = format!(
             "<pubsub xmlns='http://jabber.org/protocol/pubsub'>
                 <items node='{node}'/>
@@ -170,22 +177,7 @@ impl Connection {
             let mut client = self.client.lock().await;
             client.send_stanza(iq.into()).await?;
         }
-        let items: Items;
-        let ulid = ulid.to_string();
-        loop {
-            if let Ok(Ok(Signal::Items((id, _items)))) =
-                timeout(Duration::from_secs(1), self.rx.recv_async()).await
-            {
-                if id == ulid {
-                    items = _items;
-                    break;
-                }
-            }
-        }
-        // let items = match self.rx.recv_async().await? {
-        //     Signal::Items((id, items)) => items,
-        //     _ => {}
-        // };
+        let items = self.items_rx.recv_async().await?;
         Ok(items)
     }
 }
