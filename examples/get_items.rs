@@ -1,11 +1,9 @@
-use std::{cell::RefCell, env, rc::Rc, str::FromStr, sync::Arc, time::Duration};
+use std::env;
 
 use anyhow::Result;
 use dotenv::dotenv;
-use tokio::{sync::Mutex, task, time::sleep};
-use tokio_xmpp::{connect, jid::BareJid, Client};
 use tracing::debug;
-use xmppsocial::{convert_to_entries, Connection, XMLEntry};
+use xmppsocial::Connection;
 
 #[tokio::main]
 async fn main() -> Result<()> {

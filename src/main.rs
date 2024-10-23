@@ -1,4 +1,4 @@
-use std::{env, str::FromStr, sync::Arc, time::Duration};
+use std::{env, str::FromStr, sync::Arc};
 
 use anyhow::Result;
 use axum::{
@@ -9,16 +9,13 @@ use axum::{
     Form, Router,
 };
 use dotenv::dotenv;
-use flume::{Receiver, Sender};
 use serde::Deserialize;
 use tera::{Context, Tera};
 use tokio::sync::Mutex;
-use tokio_stream::StreamExt;
 use tokio_xmpp::{
     jid::BareJid,
     minidom::Element,
-    parsers::iq::{Iq, IqType},
-    Client, Event, Stanza,
+    parsers::iq::{Iq, IqType}, Stanza,
 };
 use tracing::debug;
 use ulid::Ulid;

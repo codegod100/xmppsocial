@@ -1,13 +1,10 @@
-use anyhow::anyhow;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use core::time;
 use feed_rs::parser;
 use flume::{Receiver, Sender};
-use futures::future::OkInto;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde::Serialize;
-use std::{cell::RefCell, cmp::min, rc::Rc, str::FromStr, sync::Arc, time::Duration};
+use std::{cmp::min, str::FromStr, sync::Arc, time::Duration};
 use tokio::{sync::Mutex, task, time::timeout};
 use tokio_stream::StreamExt;
 use tokio_xmpp::{
