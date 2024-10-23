@@ -71,7 +71,7 @@ impl XMLEntry {
 }
 
 pub struct Connection {
-    jid: BareJid,
+    pub jid: BareJid,
     pub client: Arc<Mutex<StartTlsClient>>,
     online: Arc<Mutex<bool>>,
     items_tx: Sender<Items>,

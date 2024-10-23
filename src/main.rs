@@ -4,7 +4,7 @@ use anyhow::Result;
 use axum::{
     extract::State,
     http::StatusCode,
-    response::{Html, IntoResponse, Response},
+    response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
     Form, Router,
 };
@@ -65,10 +65,10 @@ async fn main() -> Result<()> {
     let jid = env::var("JID").expect("JID is not set");
     let password = env::var("PASSWORD").expect("PASSWORD is not set");
 
-    let mut connection = Arc::new(Mutex::new(Connection::new(jid, password).await?));
+    let connection = Arc::new(Mutex::new(Connection::new(jid, password).await?));
     let app = Router::new()
         .route("/", get(index_handler))
-        .route("/", post(publish_handler))
+        .route("/post", post(publish_handler))
         .with_state(connection);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
     debug!("listening on http://{}", listener.local_addr()?);
@@ -85,15 +85,15 @@ struct Input {
 async fn publish_handler(
     State(connection): State<Arc<Mutex<Connection>>>,
     Form(input): Form<Input>,
-) -> Result<String, AppError> {
-    let jid = env::var("JID").expect("JID is not set");
-    let content = input.message;
-    let uri = jid;
-    let entry = XMLEntry::quick_post(&content, &uri);
-
+) -> Result<Redirect, AppError> {
     let connection = connection.lock().await;
-
-    Ok(String::new())
+    let jid = connection.jid.clone();
+    let content = input.message;
+    let entry = XMLEntry::quick_post(&content, &jid.clone().to_string());
+    let stanza = content_stanza(jid.clone(), &entry).await?;
+    let mut client = connection.client.lock().await;
+    client.send_stanza(stanza).await?;
+    Ok(Redirect::to("/"))
 }
 
 #[axum::debug_handler]
