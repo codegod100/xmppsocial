@@ -74,8 +74,8 @@ pub struct Connection {
     jid: BareJid,
     pub client: Arc<Mutex<StartTlsClient>>,
     online: Arc<Mutex<bool>>,
-    items_tx: Sender<Result<Items>>,
-    items_rx: Receiver<Result<Items>>,
+    items_tx: Sender<Items>,
+    items_rx: Receiver<Items>,
     roster_tx: Sender<Roster>,
     roster_rx: Receiver<Roster>,
 }
@@ -89,7 +89,7 @@ impl Connection {
         let (roster_tx, roster_rx) = flume::unbounded();
         let conn = Connection {
             jid,
-            client: Arc::clone(&client),
+            client,
             online: Arc::new(Mutex::new(false)),
             items_tx,
             items_rx,
@@ -114,7 +114,7 @@ impl Connection {
         task::spawn(async move {
             loop {
                 let mut client = client.lock().await;
-                if let Ok(Some(event)) = timeout(Duration::from_secs(1), client.next()).await {
+                if let Ok(Some(event)) = timeout(Duration::from_millis(10), client.next()).await {
                     debug!("event: {:?}", event);
                     match event {
                         Event::Online { .. } => {
@@ -130,7 +130,7 @@ impl Connection {
                                     let event = PubSub::try_from(result.clone())?;
                                     match event {
                                         PubSub::Items(items) => {
-                                            items_tx.send_async(Ok(items)).await?;
+                                            items_tx.send_async(items).await?;
                                         }
                                         _ => {}
                                     }
@@ -195,14 +195,14 @@ impl Connection {
         }
         let items = self.items_rx.recv_timeout(Duration::from_millis(100));
         let items = match items {
-            Ok(Ok(items)) => Some(items),
+            Ok(items) => Some(items),
             _ => None,
         };
         Ok(items)
     }
 }
 
-fn convert_to_entries(items: Items) -> Result<Vec<Entry>> {
+pub fn convert_to_entries(items: Items) -> Result<Vec<Entry>> {
     let mut entries: Vec<Entry> = Vec::new();
     for item in items.items {
         if let Some(payload) = &item.payload {

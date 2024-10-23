@@ -1,4 +1,4 @@
-use std::{env, str::FromStr, time::Duration};
+use std::{env, str::FromStr, sync::Arc, time::Duration};
 
 use anyhow::Result;
 use axum::{
@@ -12,6 +12,7 @@ use dotenv::dotenv;
 use flume::{Receiver, Sender};
 use serde::Deserialize;
 use tera::{Context, Tera};
+use tokio::sync::Mutex;
 use tokio_stream::StreamExt;
 use tokio_xmpp::{
     jid::BareJid,
@@ -21,7 +22,7 @@ use tokio_xmpp::{
 };
 use tracing::debug;
 use ulid::Ulid;
-use xmppsocial::{match_event, Signal, XMLEntry};
+use xmppsocial::{convert_to_entries, Connection, XMLEntry};
 
 async fn content_stanza(jid: BareJid, entry: &XMLEntry) -> Result<Stanza> {
     // debug!("got {entry}; attempting to publish");
@@ -55,94 +56,20 @@ async fn content_stanza(jid: BareJid, entry: &XMLEntry) -> Result<Stanza> {
     Ok(stanza)
 }
 
-async fn command_loop(
-    xmpp_rx: Receiver<Signal>,
-    http_tx: Sender<Signal>,
-    xmpp_tx: Sender<Signal>,
-) -> Result<()> {
-    let jid = env::var("JID").expect("JID is not set");
-    let jid = BareJid::from_str(&jid.clone())?;
-    let password = env::var("PASSWORD").expect("PASSWORD is not set");
-    let mut client = Client::new(jid.clone(), password);
-    loop {
-        tokio::select! {
-             Ok(signal) = xmpp_rx.recv_async() =>{
-                match signal {
-                    Signal::XMLEntry(entry) => {
-                        let stanza = content_stanza(jid.clone(), &entry).await?;
-                        client.send_stanza(stanza).await?;
-                    }
-                    Signal::Roster => {
-                        debug!("roster response");
-
-                        let s = "<query xmlns='jabber:iq:roster'/>";
-                        let e = Element::from_str(&s)?;
-                        let iqtype = IqType::Get(e);
-                        let ulid = Ulid::new();
-                        let iq = Iq {
-                            id: ulid.to_string(),
-                            to: Some(jid.clone().into()),
-                            from: None,
-                            payload: iqtype,
-                        };
-                        client.send_stanza(iq.into()).await?;
-
-
-                        let s = "<query xmlns='http://jabber.org/protocol/disco#items'/>";
-                        // todo figure out a smart way to wait
-                        tokio::time::sleep(Duration::from_secs(1)).await;
-                        http_tx.send_async(Signal::EntryBreak).await?;
-                    }
-                    Signal::Jid(jid) => {
-                        debug!("grabbing {jid} from http request");
-                        let s = "<pubsub xmlns='http://jabber.org/protocol/pubsub'>
-                    <items node='urn:xmpp:microblog:0'/>
-                </pubsub>";
-                        let e = Element::from_str(s)?;
-                        let iqtype = IqType::Get(e);
-                        let ulid = Ulid::new();
-                        let iq = Iq {
-                            id: ulid.to_string(),
-                            to: Some(BareJid::from_str(&jid)?.into()),
-                            from: None,
-                            payload: iqtype,
-                        };
-                        client.send_stanza(iq.into()).await?;
-                    }
-                    _ => debug!("some other thing"),
-                }
-            },
-            event = client.next() => {
-                    debug!("event: {:?}", event);
-                    match event {
-                        Some(Event::Online { .. }) => {}
-                        Some(event) => match_event(event, http_tx.clone(), xmpp_tx.clone()).await?,
-                        _ => {}
-                    }
-            }
-        }
-    }
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     dotenv().ok();
 
-    let (http_tx, http_rx) = flume::unbounded();
-    let (xmpp_tx, xmpp_rx) = flume::unbounded();
-    tokio::spawn(run_server(http_rx, xmpp_tx.clone()));
-    command_loop(xmpp_rx, http_tx, xmpp_tx).await?;
+    let jid = env::var("JID").expect("JID is not set");
+    let password = env::var("PASSWORD").expect("PASSWORD is not set");
 
-    Ok(())
-}
-
-async fn run_server(http_rx: Receiver<Signal>, xmpp_tx: Sender<Signal>) -> Result<()> {
+    let mut connection = Arc::new(Mutex::new(Connection::new(jid, password).await?));
     let app = Router::new()
         .route("/", get(index_handler))
         .route("/", post(publish_handler))
-        .with_state((http_rx, xmpp_tx));
+        .with_state(connection);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
     debug!("listening on http://{}", listener.local_addr()?);
     axum::serve(listener, app).await?;
@@ -156,7 +83,7 @@ struct Input {
 
 #[axum::debug_handler]
 async fn publish_handler(
-    State((http_rx, xmpp_tx)): State<(Receiver<Signal>, Sender<Signal>)>,
+    State(connection): State<Arc<Mutex<Connection>>>,
     Form(input): Form<Input>,
 ) -> Result<String, AppError> {
     let jid = env::var("JID").expect("JID is not set");
@@ -164,36 +91,29 @@ async fn publish_handler(
     let uri = jid;
     let entry = XMLEntry::quick_post(&content, &uri);
 
-    xmpp_tx.send_async(Signal::XMLEntry(entry)).await?;
+    let connection = connection.lock().await;
 
     Ok(String::new())
 }
 
 #[axum::debug_handler]
 async fn index_handler(
-    State((http_rx, xmpp_tx)): State<(Receiver<Signal>, Sender<Signal>)>,
+    State(connection): State<Arc<Mutex<Connection>>>,
 ) -> Result<Html<String>, AppError> {
-    debug!("index handler");
-    {
-        xmpp_tx.send_async(Signal::Roster).await?;
-        debug!("after roster sent");
-    }
-    // wait for the response, todo figure out how to do this with async
-
+    let mut connection = connection.lock().await;
+    let roster = connection.get_roster().await?;
     let mut entries = Vec::new();
-    while let Ok(signal) = http_rx.recv_async().await {
-        match signal {
-            Signal::Entry(entry) => {
-                debug!("entry: {:?}", entry);
-                entries.push(entry);
-            }
-            Signal::EntryBreak => {
-                break;
-            }
-            _ => {}
-        }
+    for item in roster.items {
+        let jid = item.jid.to_string();
+        let items = connection.get_items(&jid, "urn:xmpp:microblog:0").await?;
+        debug!("{items:?}");
+        let items = match items {
+            Some(items) => items,
+            None => continue,
+        };
+        let _entries = convert_to_entries(items)?;
+        entries.extend(_entries);
     }
-
     entries.sort_by(|a, b| b.published.cmp(&a.published));
     let mut context = Context::new();
     context.insert("entries", &entries);
