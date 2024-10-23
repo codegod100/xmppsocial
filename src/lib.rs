@@ -1,12 +1,13 @@
-use std::{cell::RefCell, cmp::min, rc::Rc, str::FromStr, sync::Arc, time::Duration};
-
+use anyhow::anyhow;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use core::time;
 use feed_rs::parser;
 use flume::{Receiver, Sender};
 use futures::future::OkInto;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde::Serialize;
+use std::{cell::RefCell, cmp::min, rc::Rc, str::FromStr, sync::Arc, time::Duration};
 use tokio::{sync::Mutex, task, time::timeout};
 use tokio_stream::StreamExt;
 use tokio_xmpp::{
@@ -18,34 +19,10 @@ use tokio_xmpp::{
         pubsub::{pubsub::Items, PubSub},
         roster::Roster,
     },
-    Event, Stanza,
+    Client, Event, Stanza,
 };
 use tracing::debug;
 use ulid::Ulid;
-
-#[derive(Debug)]
-pub enum Signal {
-    XMLEntry(XMLEntry),
-    Entry(Entry),
-    Roster,
-    Jid(String),
-    Items((String, Items)),
-    EntryBreak,
-    Online,
-}
-
-#[derive(Clone)]
-pub struct AppState {
-    pub tx: Sender<Signal>,
-    pub rx: Receiver<Signal>,
-}
-
-impl AppState {
-    pub fn new() -> Self {
-        let (tx, rx) = flume::unbounded();
-        Self { tx, rx }
-    }
-}
 
 #[derive(Debug, Serialize)]
 pub struct Entry {
@@ -94,21 +71,30 @@ impl XMLEntry {
 }
 
 pub struct Connection {
+    jid: BareJid,
     pub client: Arc<Mutex<StartTlsClient>>,
     online: Arc<Mutex<bool>>,
-    items_tx: Sender<Items>,
-    items_rx: Receiver<Items>,
+    items_tx: Sender<Result<Items>>,
+    items_rx: Receiver<Result<Items>>,
+    roster_tx: Sender<Roster>,
+    roster_rx: Receiver<Roster>,
 }
 
 impl Connection {
-    pub async fn new(client: StartTlsClient) -> Result<Self> {
+    pub async fn new(jid: String, password: String) -> Result<Self> {
+        let jid = BareJid::from_str(&jid.clone())?;
+        let client = Client::new(jid.clone(), password);
         let client = Arc::new(Mutex::new(client));
         let (items_tx, items_rx) = flume::unbounded();
+        let (roster_tx, roster_rx) = flume::unbounded();
         let conn = Connection {
+            jid,
             client: Arc::clone(&client),
             online: Arc::new(Mutex::new(false)),
             items_tx,
             items_rx,
+            roster_tx,
+            roster_rx,
         };
         conn.event_loop();
         loop {
@@ -124,6 +110,7 @@ impl Connection {
         let online = Arc::clone(&self.online);
         let items_tx = self.items_tx.clone();
         let client = Arc::clone(&self.client);
+        let roster_tx = self.roster_tx.clone();
         task::spawn(async move {
             loop {
                 let mut client = client.lock().await;
@@ -143,15 +130,24 @@ impl Connection {
                                     let event = PubSub::try_from(result.clone())?;
                                     match event {
                                         PubSub::Items(items) => {
-                                            items_tx.send_async(items).await?;
+                                            items_tx.send_async(Ok(items)).await?;
                                         }
-                                        _ => debug!("event: {:?}", event),
+                                        _ => {}
                                     }
                                 }
+                                if result.ns() == "jabber:iq:roster" {
+                                    let roster = Roster::try_from(result.clone())?;
+                                    roster_tx.send_async(roster).await?;
+                                }
+                            }
+                            IqType::Error(err) => {
+                                debug!("stanza error: {err:?}")
                             }
                             _ => {}
                         },
-                        _ => {}
+                        other => {
+                            debug!("Other: {other:?}");
+                        }
                     }
                 }
             }
@@ -159,7 +155,26 @@ impl Connection {
         });
     }
 
-    pub async fn get_items(&mut self, jid: &str, node: &str) -> Result<Items> {
+    pub async fn get_roster(&mut self) -> Result<Roster> {
+        let s = "<query xmlns='jabber:iq:roster'/>";
+        let e = Element::from_str(&s)?;
+        let iqtype = IqType::Get(e);
+        let ulid = Ulid::new();
+        let iq = Iq {
+            id: ulid.to_string(),
+            to: Some(self.jid.clone().into()),
+            from: None,
+            payload: iqtype,
+        };
+        {
+            let mut client = self.client.lock().await;
+            client.send_stanza(iq.into()).await?;
+        }
+        let roster = self.roster_rx.recv_async().await?;
+        Ok(roster)
+    }
+
+    pub async fn get_items(&mut self, jid: &str, node: &str) -> Result<Option<Items>> {
         let s = format!(
             "<pubsub xmlns='http://jabber.org/protocol/pubsub'>
                 <items node='{node}'/>
@@ -178,12 +193,17 @@ impl Connection {
             let mut client = self.client.lock().await;
             client.send_stanza(iq.into()).await?;
         }
-        let items = self.items_rx.recv_async().await?;
+        let items = self.items_rx.recv_timeout(Duration::from_millis(100));
+        let items = match items {
+            Ok(Ok(items)) => Some(items),
+            _ => None,
+        };
         Ok(items)
     }
 }
 
-fn send_item(items: Items, http_tx: Sender<Signal>) -> Result<()> {
+fn convert_to_entries(items: Items) -> Result<Vec<Entry>> {
+    let mut entries: Vec<Entry> = Vec::new();
     for item in items.items {
         if let Some(payload) = &item.payload {
             let payload_s = String::from(payload);
@@ -220,55 +240,9 @@ fn send_item(items: Items, http_tx: Sender<Signal>) -> Result<()> {
                         .next(),
                 };
 
-                debug!("entry: {:?}", entry);
-                http_tx.send(Signal::Entry(entry))?;
+                entries.push(entry);
             }
         }
     }
-    Ok(())
-}
-
-pub async fn match_event(
-    event: Event,
-    http_tx: Sender<Signal>,
-    xmpp_tx: Sender<Signal>,
-) -> Result<()> {
-    match event {
-        Event::Online { .. } => {
-            debug!("online");
-        }
-        Event::Stanza(stanza) => match stanza {
-            Stanza::Iq(iq) => {
-                debug!("iq: {:?}", iq);
-                if let IqType::Result(Some(element)) = &iq.payload {
-                    if element.ns() == "http://jabber.org/protocol/pubsub" {
-                        let event = PubSub::try_from(element.clone())?;
-                        match event {
-                            PubSub::Items(items) => {
-                                send_item(items, http_tx)?;
-                            }
-                            _ => debug!("event: {:?}", event),
-                        }
-                    }
-                    if element.ns() == "jabber:iq:roster" {
-                        debug!("roster: {:?}", element);
-                        let roster = Roster::try_from(element.clone())?;
-                        for item in roster.items {
-                            debug!("item: {:?}", item);
-                            xmpp_tx
-                                .send_async(Signal::Jid(item.jid.to_string()))
-                                .await?;
-                        }
-                    }
-                }
-                if let IqType::Error(error) = &iq.payload {
-                    debug!("error: {:?}", error);
-                    // tx.send(format!("error: {:?}", error))?;
-                }
-            }
-            _ => debug!("stanza: {:?}", stanza),
-        },
-        _ => debug!("event: {:?}", event),
-    }
-    Ok(())
+    Ok(entries)
 }
