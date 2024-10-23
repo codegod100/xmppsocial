@@ -17,13 +17,10 @@ async fn main() -> Result<()> {
     let jid = BareJid::from_str(&jid.clone())?;
     let password = env::var("PASSWORD").expect("PASSWORD is not set");
     let client = Client::new(jid.clone(), password);
-    {
-        let mut connection = Connection::new(client).await;
-        let items = connection
-            .get_items("nandi@conversations.im", "urn:xmpp:microblog:0")
-            .await?;
-        debug!("{items:?}");
-        debug!("done");
-    }
+    let mut connection = Connection::new(client).await?;
+    let items = connection
+        .get_items("nandi@conversations.im", "urn:xmpp:microblog:0")
+        .await?;
+    debug!("{items:?}");
     Ok(())
 }

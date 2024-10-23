@@ -4,6 +4,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use feed_rs::parser;
 use flume::{Receiver, Sender};
+use futures::future::OkInto;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde::Serialize;
 use tokio::{sync::Mutex, task, time::timeout};
@@ -100,7 +101,7 @@ pub struct Connection {
 }
 
 impl Connection {
-    pub async fn new(client: StartTlsClient) -> Self {
+    pub async fn new(client: StartTlsClient) -> Result<Self> {
         let client = Arc::new(Mutex::new(client));
         let (items_tx, items_rx) = flume::unbounded();
         let conn = Connection {
@@ -109,19 +110,20 @@ impl Connection {
             items_tx,
             items_rx,
         };
-        conn.event_loop().await;
+        conn.event_loop();
         loop {
-            if *conn.online.lock().await {
+            let online = conn.online.lock().await;
+            if *online {
                 break;
             }
         }
-        conn
+        Ok(conn)
     }
 
-    pub async fn event_loop(&self) {
-        let client = Arc::clone(&self.client);
+    pub fn event_loop(&self) {
         let online = Arc::clone(&self.online);
         let items_tx = self.items_tx.clone();
+        let client = Arc::clone(&self.client);
         task::spawn(async move {
             loop {
                 let mut client = client.lock().await;
@@ -153,7 +155,6 @@ impl Connection {
                     }
                 }
             }
-
             Ok::<(), anyhow::Error>(())
         });
     }
